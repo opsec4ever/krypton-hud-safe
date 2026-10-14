@@ -15,107 +15,129 @@ import java.util.*;
 import static meteordevelopment.meteorclient.MeteorClient.mc;
 
 /**
- * Pop-up panels when a module is enabled or disabled.
- * Detects toggles by comparing the active-module set each frame, so it needs no event hooks.
+ * Module toggle cards: 280x65, dark rounded card, round badge, title + "Has been enabled/disabled.",
+ * and a progress bar that drains over the duration (green = enabled, red = disabled).
+ * Toggles are detected by comparing the active-module set each frame.
  */
 public class NotificationElement extends KElement {
     public static final HudElementInfo<NotificationElement> INFO = new HudElementInfo<>(
         KryptonLookAddon.HUD_GROUP, "kl-notifications", "Module toggle notifications.", NotificationElement::new);
 
     public enum Corner { TopLeft, TopRight, BottomLeft, BottomRight }
-    public enum Severity { INFO, SUCCESS, WARN, ERROR }
 
-    private static class Note {
-        final String title, msg; final Severity sev; final long born = System.currentTimeMillis();
-        Note(String t, String m, Severity s) { title = t; msg = m; sev = s; }
-    }
+    private static final double W = 280, H = 65, GAP = 12, MARGIN = 15, RADIUS = 8;
+    private static final int MAX = 5;
 
     private final SettingGroup sg = settings.createGroup("Notifications");
-
     private final Setting<Corner> corner = sg.add(new EnumSetting.Builder<Corner>()
-        .name("corner").description("Which corner the stack grows from.").defaultValue(Corner.TopRight).build());
+        .name("corner").description("Which side cards slide in from and stack towards.")
+        .defaultValue(Corner.BottomRight).build());
     private final Setting<Double> duration = sg.add(new DoubleSetting.Builder()
-        .name("duration").description("Seconds a notification stays.").defaultValue(3).min(0.5).sliderRange(0.5, 10).build());
-    private final Setting<Integer> max = sg.add(new IntSetting.Builder()
-        .name("max-visible").description("Most notifications shown at once.").defaultValue(5).min(1).sliderRange(1, 10).build());
+        .name("duration").description("How long a card stays (ms).")
+        .defaultValue(2500).min(1000).max(5000).sliderRange(1000, 5000).build());
     private final Setting<Boolean> sound = sg.add(new BoolSetting.Builder()
-        .name("sound").description("Play a click when one appears.").defaultValue(false).build());
+        .name("sound").description("Play a click when a card appears.").defaultValue(false).build());
+
+    private static class Note {
+        final String title; final boolean enabled; final long born = System.currentTimeMillis();
+        final long life; double slide = 0;
+        Note(String t, boolean e, long l) { title = t; enabled = e; life = l; }
+        long age() { return System.currentTimeMillis() - born; }
+        boolean expired() { return age() > life; }
+        double fade() {
+            long a = age();
+            if (a < 200) return a / 200.0;
+            if (a > life - 200) return Math.max(0, 1.0 - (a - (life - 200)) / 200.0);
+            return 1;
+        }
+        double progress() { return Math.max(0, Math.min(1, 1.0 - age() / (double) life)); }
+    }
 
     private final List<Note> notes = new ArrayList<>();
     private Set<Module> last = null;
 
     public NotificationElement() { super(INFO); }
 
+    private static boolean ignored(Module m) {
+        String t = m.title.toLowerCase();
+        return t.contains("gui") || t.contains("hud") || t.contains("click");
+    }
+
     private void poll() {
         Set<Module> now = new HashSet<>(Modules.get().getActive());
         if (last != null) {
-            for (Module m : now) if (!last.contains(m)) push(m.title, "ENABLED", Severity.SUCCESS);
-            for (Module m : last) if (!now.contains(m)) push(m.title, "DISABLED", Severity.ERROR);
+            for (Module m : now) if (!last.contains(m) && !ignored(m)) push(m.title, true);
+            for (Module m : last) if (!now.contains(m) && !ignored(m)) push(m.title, false);
         }
-        last = now; // first call only records the starting state, so no burst on load
+        last = now;   // first call only records the starting state
     }
 
-    private void push(String title, String msg, Severity sev) {
-        notes.add(0, new Note(title.toUpperCase(), msg, sev));
+    private void push(String title, boolean enabled) {
+        notes.add(0, new Note(title, enabled, duration.get().longValue()));
         if (sound.get() && mc.getSoundManager() != null)
             mc.getSoundManager().play(PositionedSoundInstance.master(SoundEvents.UI_BUTTON_CLICK, 1.0f));
     }
 
-    private Color sevColor(Severity s) {
-        return switch (s) {
-            case SUCCESS -> new Color(90, 220, 140, 255);
-            case WARN -> new Color(240, 190, 70, 255);
-            case ERROR -> new Color(240, 90, 90, 255);
-            case INFO -> acc(0);
-        };
-    }
-
     @Override
     public void render(HudRenderer r) {
-        long now = System.currentTimeMillis();
-        long life = (long) (duration.get() * 1000);
-
+        tickDt();
         if (preview()) {
             notes.clear();
-            notes.add(new Note("FULLBRIGHT", "ENABLED", Severity.SUCCESS));
-            notes.add(new Note("SPRINT", "DISABLED", Severity.ERROR));
+            Note a = new Note("Fullbright", true, 100000); a.slide = 1;
+            Note b = new Note("Sprint", false, 100000); b.slide = 1;
+            notes.add(a); notes.add(b);
         } else {
             poll();
-            notes.removeIf(n -> now - n.born > life);
-            while (notes.size() > max.get()) notes.remove(notes.size() - 1);
+            notes.removeIf(Note::expired);
+            while (notes.size() > MAX) notes.remove(notes.size() - 1);
         }
 
-        double th = r.textHeight(false);
-        double rowH = th * 2 + PAD * 2 + 1;
-        double gap = 2;
         boolean right = corner.get() == Corner.TopRight || corner.get() == Corner.BottomRight;
         boolean bottom = corner.get() == Corner.BottomLeft || corner.get() == Corner.BottomRight;
+        int n = Math.max(1, notes.size());
+        double total = n * H + (n - 1) * GAP;
+        setSize(W, total);
 
-        double w = 90;
-        for (Note n : notes) w = Math.max(w, Math.max(r.textWidth(n.title, false), r.textWidth(n.msg, false)) + PAD * 2 + 3);
-        int count = Math.max(1, notes.size());
-        double total = count * rowH + (count - 1) * gap;
-        setSize(w, total);
+        double th = r.textHeight(false);
+        int index = 0;
+        for (Note note : notes) {
+            long age = note.age();
+            if (age < 300) note.slide = lerp(note.slide, 1, 20, dt);
+            else if (age < note.life - 300) note.slide = 1;
+            else note.slide = lerp(note.slide, 0, 20, dt);
 
-        int i = 0;
-        for (Note n : notes) {
-            long age = preview() ? 1000 : now - n.born;
-            double in = Math.min(1, age / 200.0);
-            double ease = 1 - Math.pow(1 - in, 3);
-            double out = preview() ? 1 : Math.min(1, (life - age) / 300.0); // fade over the last 0.3s
-            double a = ease * Math.max(0, out);
+            double fade = preview() ? 1 : note.fade();
+            if (fade <= 0) continue;
 
-            double rw = Math.max(r.textWidth(n.title, false), r.textWidth(n.msg, false)) + PAD * 2 + 3;
-            double slide = (1 - ease) * (right ? rw : -rw);
-            double rx = (right ? x + w - rw : x) + slide;
-            double ry = bottom ? y + total - (i + 1) * rowH - i * gap : y + i * (rowH + gap);
+            double offset = (W + MARGIN) * (1 - note.slide);
+            double nx = right ? x + offset : x - offset;
+            double ny = bottom ? y + total - (index + 1) * H - index * GAP : y + index * (H + GAP);
 
-            Color c = sevColor(n.sev);
-            panel(r, rx, ry, rw, rowH);
-            r.quad(rx, ry, 2, rowH, fade(c, a));
-            r.text(n.title, rx + PAD + 3, ry + PAD, fade(c, a), false);
-            r.text(n.msg, rx + PAD + 3, ry + PAD + th + 1, fade(TEXT, a), false);
-            i++;
+            // card
+            rrect(r, nx, ny, W, H, (int) RADIUS, new Color(18, 18, 22, (int) (200 * fade)));
+
+            // badge
+            double bx = nx + 35, by = ny + H / 2, br = 18;
+            circle(r, bx, by, br, note.enabled ? new Color(50, 55, 60, (int) (220 * fade))
+                                               : new Color(55, 45, 45, (int) (220 * fade)));
+            String badge = note.enabled ? "ON" : "OFF";
+            double bs = 0.8;
+            r.text(badge, bx - r.textWidth(badge, false, bs) / 2, by - r.textHeight(false, bs) / 2,
+                note.enabled ? new Color(40, 200, 80, (int) (255 * fade)) : new Color(240, 70, 70, (int) (255 * fade)),
+                false, bs);
+
+            // progress bar
+            double barW = W - 16, barH = 3, barX = nx + 8, barY = ny + H - barH - 4;
+            r.quad(barX, barY, barW, barH, new Color(30, 30, 35, (int) (150 * fade)));
+            double filled = barW * (preview() ? 0.6 : note.progress());
+            if (filled > 0) r.quad(barX, barY, filled, barH,
+                note.enabled ? new Color(40, 200, 80, (int) (255 * fade)) : new Color(240, 70, 70, (int) (255 * fade)));
+
+            // text
+            r.text(note.title, nx + 68, ny + 14, fade(PRIMARY, fade), false, 1.1);
+            r.text(note.enabled ? "Has been enabled." : "Has been disabled.", nx + 68, ny + 36,
+                withAlpha(SECONDARY, (int) (220 * fade)), false, 0.85);
+            index++;
         }
     }
 }

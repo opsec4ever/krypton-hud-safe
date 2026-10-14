@@ -21,15 +21,11 @@ public class KryptonLookAddon extends MeteorAddon {
     public void onInitialize() {
         installFont();
         Hud hud = Hud.get();
-        hud.register(WatermarkElement.INFO);
-        hud.register(InfoElement.INFO);
-        hud.register(CoordsElement.INFO);
-        hud.register(StatsElement.INFO);
+        hud.register(StatusRowsElement.INFO);
         hud.register(ModuleListElement.INFO);
         hud.register(PotionsElement.INFO);
         hud.register(HotkeysElement.INFO);
         hud.register(RadarElement.INFO);
-        hud.register(CompassElement.INFO);
         hud.register(NotificationElement.INFO);
     }
 
